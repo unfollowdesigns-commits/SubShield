@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local `wrangler dev`. .dev.vars is gitignored.
+OPENAI_API_KEY=sk-...
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_KEY=<service_role key — server-side only, never in a browser>

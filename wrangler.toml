@@ -1,0 +1,24 @@
+name = "subshield"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "subshield-docs"
+
+[vars]
+APP_URL = "https://app.subshield.io"
+# Verify the current model id and per-million-token rates before deploying.
+OPENAI_MODEL = "gpt-5-mini"
+OPENAI_INPUT_RATE = "0.25"
+OPENAI_OUTPUT_RATE = "2.00"
+
+# Secrets — set with `wrangler secret put <NAME>`, never in this file:
+#   OPENAI_API_KEY
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_KEY
+
+# The daily 30/15/7/0 chase ladder is not built yet. When it is:
+# [triggers]
+# crons = ["0 13 * * *"]   # 08:00 America/New_York — Workers cron is UTC only
