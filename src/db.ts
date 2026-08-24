@@ -29,6 +29,7 @@ export interface Subcontractor {
   contact_email: string;
   contact_person: string | null;
   trade: string | null;
+  upload_token: string;
   active_cert_id: string | null;
 }
 
@@ -42,6 +43,28 @@ export interface CertificateRow {
   failure_reasons: FailureReason[] | null;
   expiration_date: string | null;
   created_at: string;
+}
+
+export interface CertificateDetail extends CertificateRow {
+  company_id: string;
+  subcontractor_id: string | null;
+  r2_key: string | null;
+  original_filename: string | null;
+  source: string;
+  producer_name: string | null;
+  insured_entity_name: string | null;
+  carrier_name: string | null;
+  gl_policy_number: string | null;
+  gl_each_occurrence: number | null;
+  gl_general_aggregate: number | null;
+  additional_insured: boolean | null;
+  waiver_subrogation: boolean | null;
+  certificate_holder_text: string | null;
+  ai_confidence: number | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  companies: Company;
+  subcontractors: Subcontractor | null;
 }
 
 export class Db {
@@ -75,6 +98,39 @@ export class Db {
     const rows = await this.request<SubcontractorWithCompany[]>(
       `/subcontractors?upload_token=eq.${encodeURIComponent(token)}` +
         `&select=*,companies(*)&limit=1`,
+    );
+    return rows[0] ?? null;
+  }
+
+  async companyByAlias(alias: string): Promise<Company | null> {
+    const rows = await this.request<Company[]>(
+      `/companies?inbound_alias=eq.${encodeURIComponent(alias)}&select=*&limit=1`,
+    );
+    return rows[0] ?? null;
+  }
+
+  async subcontractorById(id: string): Promise<Subcontractor | null> {
+    const rows = await this.request<Subcontractor[]>(
+      `/subcontractors?id=eq.${encodeURIComponent(id)}&select=*&limit=1`,
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Match candidates for one client. Only the fields matching needs. */
+  async subcontractorsForCompany(companyId: string): Promise<
+    { id: string; vendor_name: string; contact_email: string }[]
+  > {
+    return this.request(
+      `/subcontractors?company_id=eq.${encodeURIComponent(companyId)}` +
+        `&select=id,vendor_name,contact_email`,
+    );
+  }
+
+  /** Everything the review screen shows, in one round trip. */
+  async certificateDetail(id: string): Promise<CertificateDetail | null> {
+    const rows = await this.request<CertificateDetail[]>(
+      `/certificates?id=eq.${encodeURIComponent(id)}` +
+        `&select=*,companies(*),subcontractors(*)&limit=1`,
     );
     return rows[0] ?? null;
   }

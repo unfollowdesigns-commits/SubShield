@@ -2,3 +2,11 @@
 OPENAI_API_KEY=sk-...
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_KEY=<service_role key — server-side only, never in a browser>
+
+# Signs review and upload links. Any long random string; rotating it
+# invalidates every outstanding link.
+LINK_SECRET=<openssl rand -hex 32>
+
+# Optional. Without these, nothing is emailed and the pipeline still works.
+RESEND_API_KEY=re_...
+FROM_ADDRESS=SubShield <certs@subshield.io>

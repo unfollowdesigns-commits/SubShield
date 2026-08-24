@@ -18,6 +18,14 @@ OPENAI_OUTPUT_RATE = "2.00"
 #   OPENAI_API_KEY
 #   SUPABASE_URL
 #   SUPABASE_SERVICE_KEY
+#   LINK_SECRET          long random string; signs review and upload links
+#   RESEND_API_KEY       optional — without it, no mail is sent
+#   FROM_ADDRESS         e.g. "SubShield <certs@subshield.io>"
+
+# Inbound email is wired in the Cloudflare dashboard, not here:
+#   Email > Email Routing > Catch-all address > Send to a Worker > subshield
+# One catch-all for every client keeps the account under the 200-rule limit;
+# the local part of the recipient address is the tenant key.
 
 # The daily 30/15/7/0 chase ladder is not built yet. When it is:
 # [triggers]

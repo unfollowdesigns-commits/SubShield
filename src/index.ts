@@ -1,17 +1,17 @@
 import { Db, type SubcontractorWithCompany } from './db';
-import { ExtractionError, checkFile, extract } from './extract';
-import { FAILURE_TEXT, validate } from './validate';
+import { ExtractionError, checkFile } from './extract';
+import { FAILURE_TEXT } from './validate';
 import { renderUploadPage } from './upload-page';
+import { applyDecision, renderReviewPage } from './review';
+import { processCertificate, type PipelineEnv } from './pipeline';
+import { handleInboundMail, type EmailEnv, type InboundMessage } from './email';
+import { verifyLink } from './sign';
 import type { FailureReason } from './types';
 
-export interface Env {
+export interface Env extends PipelineEnv, EmailEnv {
   DOCS: R2Bucket;
-  OPENAI_API_KEY: string;
-  OPENAI_MODEL: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
-  OPENAI_INPUT_RATE?: string;
-  OPENAI_OUTPUT_RATE?: string;
 }
 
 const json = (body: unknown, status = 200) =>
@@ -23,7 +23,13 @@ const json = (body: unknown, status = 200) =>
 const html = (body: string, status = 200) =>
   new Response(body, {
     status,
-    headers: { 'content-type': 'text/html; charset=utf-8' },
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      // The review page frames the certificate from this same origin only.
+      'content-security-policy': "frame-ancestors 'none'",
+      'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff',
+    },
   });
 
 export default {
@@ -33,34 +39,48 @@ export default {
 
     if (url.pathname === '/health') return json({ ok: true });
 
-    // /u/:token, /u/:token/status/:certificateId
-    if (parts[0] !== 'u' || !parts[1]) {
-      return html('<h1>Not found</h1>', 404);
-    }
-
     const db = new Db({ url: env.SUPABASE_URL, serviceKey: env.SUPABASE_SERVICE_KEY });
-    const sub = await db.subcontractorByToken(parts[1]);
-    if (!sub) return html('<h1>This upload link is no longer valid</h1>', 404);
 
-    if (parts[2] === 'status' && parts[3]) {
-      // Scoped to this token's company — an id alone never grants access.
-      const cert = await db.certificateStatus(parts[3], sub.company_id);
-      if (!cert) return json({ message: 'Not found' }, 404);
-      return json({
-        status: cert.verification_status,
-        expiration_date: cert.expiration_date,
-        reasons: (cert.failure_reasons ?? []).map(
-          (r) => FAILURE_TEXT[r as FailureReason] ?? r,
-        ),
-      });
-    }
+    if (parts[0] === 'u' && parts[1]) return uploadRoutes(req, env, ctx, db, parts);
+    if (parts[0] === 'review' && parts[1]) return reviewRoutes(req, env, db, url, parts);
 
-    if (parts.length === 2 && req.method === 'GET') return html(renderUploadPage(sub));
-    if (parts.length === 2 && req.method === 'POST') return handleUpload(req, env, ctx, db, sub);
+    return html('<h1>Not found</h1>', 404);
+  },
 
-    return json({ message: 'Not found' }, 404);
+  async email(message: InboundMessage, env: Env): Promise<void> {
+    await handleInboundMail(message, env);
   },
 } satisfies ExportedHandler<Env>;
+
+// ─── subcontractor upload ────────────────────────────────────────────────────
+
+async function uploadRoutes(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  db: Db,
+  parts: string[],
+): Promise<Response> {
+  const sub = await db.subcontractorByToken(parts[1]!);
+  if (!sub) return html('<h1>This upload link is no longer valid</h1>', 404);
+
+  if (parts[2] === 'status' && parts[3]) {
+    // Scoped to this token's company — an id alone never grants access.
+    const cert = await db.certificateStatus(parts[3], sub.company_id);
+    if (!cert) return json({ message: 'Not found' }, 404);
+    return json({
+      status: cert.verification_status,
+      expiration_date: cert.expiration_date,
+      reasons: (cert.failure_reasons ?? [])
+        .filter((r) => r !== ('unmatched_vendor' as FailureReason))
+        .map((r) => FAILURE_TEXT[r as FailureReason] ?? r),
+    });
+  }
+
+  if (parts.length === 2 && req.method === 'GET') return html(renderUploadPage(sub));
+  if (parts.length === 2 && req.method === 'POST') return handleUpload(req, env, ctx, db, sub);
+  return json({ message: 'Not found' }, 404);
+}
 
 async function handleUpload(
   req: Request,
@@ -115,83 +135,59 @@ async function handleUpload(
 
   // Extraction takes ~10–20s. Answer now, let the page poll for the verdict.
   ctx.waitUntil(
-    processCertificate({ bytes, type: file.type, filename: file.name }, cert.id, env, db, sub),
+    processCertificate({ bytes, type: file.type, filename: file.name }, cert.id, {
+      env,
+      db,
+      company: sub.companies,
+      subcontractor: sub,
+      source: 'portal',
+    }),
   );
 
   return json({ certificate_id: cert.id, status: 'processing' }, 202);
 }
 
-/**
- * Extract, validate, record. Every exit path writes a terminal status and an
- * audit row — a certificate must never be left sitting in `processing`.
- */
-export async function processCertificate(
-  file: { bytes: Uint8Array; type: string; filename: string },
-  certificateId: string,
+// ─── human review ────────────────────────────────────────────────────────────
+
+async function reviewRoutes(
+  req: Request,
   env: Env,
   db: Db,
-  sub: SubcontractorWithCompany,
-): Promise<void> {
-  const co = sub.companies;
-  try {
-    const result = await extract(file, {
-      apiKey: env.OPENAI_API_KEY,
-      model: env.OPENAI_MODEL,
-      inputRate: env.OPENAI_INPUT_RATE ? Number(env.OPENAI_INPUT_RATE) : undefined,
-      outputRate: env.OPENAI_OUTPUT_RATE ? Number(env.OPENAI_OUTPUT_RATE) : undefined,
-    });
+  url: URL,
+  parts: string[],
+): Promise<Response> {
+  const certId = parts[1]!;
+  const token = url.searchParams.get('t');
 
-    const x = result.extraction;
-    const failures = validate(x, co);
-    const approved = failures.length === 0;
+  // The signed link is the only credential. It names the certificate it opens,
+  // so it cannot be edited into a link for someone else's document.
+  if (!(await verifyLink(`review:${certId}`, token, env.LINK_SECRET))) {
+    return html('<h1>This review link has expired</h1>', 403);
+  }
 
-    await db.updateCertificate(certificateId, {
-      producer_name: x.producer_name,
-      insured_entity_name: x.insured_entity_name,
-      carrier_name: x.carrier_name,
-      gl_policy_number: x.gl_policy_number,
-      gl_each_occurrence: x.gl_each_occurrence_limit,
-      gl_general_aggregate: x.gl_general_aggregate_limit,
-      expiration_date: x.gl_expiration_date,
-      additional_insured: x.additional_insured_included,
-      waiver_subrogation: x.waiver_of_subrogation_included,
-      certificate_holder_text: x.certificate_holder_text,
-      ai_confidence: Number.isFinite(x.confidence_score) ? x.confidence_score : null,
-      verification_status: approved ? 'auto_approved' : 'pending_review',
-      failure_reasons: approved ? null : failures,
-      raw_json_response: result.raw,
-      model_used: result.model,
-      extraction_cost_usd: result.costUsd,
-    });
+  const cert = await db.certificateDetail(certId);
+  if (!cert) return html('<h1>Not found</h1>', 404);
 
-    if (approved) await db.promoteCertificate(sub.id, certificateId);
-
-    await db.log({
-      company_id: sub.company_id,
-      subcontractor_id: sub.id,
-      certificate_id: certificateId,
-      action: approved ? 'approved' : 'pending_review',
-      details: {
-        failure_reasons: failures,
-        confidence: x.confidence_score,
-        tokens: { input: result.inputTokens, output: result.outputTokens },
-        cost_usd: result.costUsd,
+  if (parts[2] === 'doc') {
+    if (!cert.r2_key) return html('<h1>The original document is unavailable</h1>', 404);
+    const obj = await env.DOCS.get(cert.r2_key);
+    if (!obj) return html('<h1>The original document is unavailable</h1>', 404);
+    return new Response(obj.body, {
+      headers: {
+        'content-type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+        'content-disposition': 'inline',
+        'cache-control': 'private, max-age=300',
       },
     });
-  } catch (err) {
-    const slug = err instanceof ExtractionError ? err.slug : 'extraction_failed';
-    // Failures land in the review queue, never in the bin. A document we could
-    // not read is a document a human still has to look at.
-    await db.updateCertificate(certificateId, {
-      verification_status: 'pending_review',
-      failure_reasons: [slug],
-    });
-    await db.log({
-      company_id: sub.company_id,
-      subcontractor_id: sub.id,
-      certificate_id: certificateId,
-      action: 'extraction_failed',
-      details: { reason: slug, message: (err as Error).message },
-    });
   }
+
+  if (req.method === 'POST') {
+    const form = await req.formData().catch(() => null);
+    if (!form) return html(renderReviewPage(cert, token!, { kind: 'error', text: 'Malformed form.' }), 400);
+    const outcome = await applyDecision(cert, form, db);
+    const fresh = (await db.certificateDetail(certId)) ?? cert;
+    return html(renderReviewPage(fresh, token!, outcome), outcome.kind === 'error' ? 422 : 200);
+  }
+
+  return html(renderReviewPage(cert, token!));
 }
