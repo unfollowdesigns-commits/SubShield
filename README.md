@@ -29,5 +29,5 @@ Upload page   ─┘                                         └─→  human re
 ## Cost posture
 
 The stack runs on free tiers that permit commercial use. The only recurring costs
-before revenue are a domain and an LLM API key — roughly $5/month at 100 clients,
-$50/month at 250. See §1 of the spec for what each choice replaced and why.
+before revenue are two domains and an LLM API key — roughly $7/month at 100 clients,
+$54/month at 250. See §1 of the spec for what each choice replaced and why.

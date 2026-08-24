@@ -1,12 +1,12 @@
-# CertTrack Ops — Build & Launch Spec (Zero-Cost Stack)
+# SubShield — Build & Launch Spec (Zero-Cost Stack)
 
 **Product:** Automated subcontractor Certificate of Insurance (COI) compliance engine.
 **Market:** Commercial GCs, residential homebuilders, commercial property managers.
 **Objective:** Replace manual COI tracking with an automated extraction → verification → chase pipeline.
 **Target:** $1,000,000 ARR (250 clients @ $350/mo).
 
-**Cost posture (the governing constraint):** the only recurring bill before revenue is a
-domain (~$12/yr) and an OpenAI API key measured in single-digit dollars per month.
+**Cost posture (the governing constraint):** the only recurring bills before revenue are two
+domains (~$41/yr together) and an OpenAI API key measured in single-digit dollars per month.
 Everything else runs on free tiers that explicitly permit commercial use. This document
 is the original blueprint re-based on that constraint — the product is unchanged, the
 $939/mo stack is not.
@@ -47,10 +47,15 @@ UI. Each line item is replaced by something free that does the same job, or cut.
 | Inbound email parsing | paid on most vendors | **Cloudflare Email Routing + Email Workers** | $0 | Catch-all `*@process.yourdomain.com` routes straight into a Worker. This is the single best free component in the stack. |
 | Claude 3.5 Sonnet / GPT-4o | ~$250/mo est. | **A current mini-tier OpenAI model** with Structured Outputs | ~$3–8/mo | The original estimate was ~100x too high for this workload. See [cost math](#api-cost-math). |
 | Slack | free tier fine | Unchanged (incoming webhooks are free) | $0 | |
-| — | — | **Domain** | ~$12/yr | Unavoidable. Buy at cost (Cloudflare Registrar sells at wholesale). |
+| — | — | **Domains** (product + outbound) | ~$41/yr | Unavoidable. `subshield.io` ~$30/yr, `subshieldhq.com` ~$11/yr. Compare registrars — Cloudflare Registrar sells at wholesale. |
 
-**Total recurring before revenue: the domain plus an OpenAI key.** Realistically under
+**Total recurring before revenue: two domains plus an OpenAI key.** Realistically under
 $10/month until you are past ~50 paying clients.
+
+`subshield.com` was already registered by someone else when this was written, as were
+`.co`, `.net`, `.app`, `getsubshield.com` and `trysubshield.com`. `subshield.io` is the
+product domain throughout this document and `subshieldhq.com` is the outbound-sales
+domain — re-check both before building anything around them.
 
 ### The one thing to not cheap out on
 
@@ -66,10 +71,10 @@ the one place where "free" costs you the ability to answer a client's security q
 
 ```
 [INCOMING CHANNELS]
-   Subcontractor upload page          Dedicated inbound alias
-   app.certtrackops.com/u/<token>     apex-certs@process.certtrackops.com
-                    │                          │
-                    └────────────┬─────────────┘
+    Subcontractor upload page          Dedicated inbound alias
+   app.subshield.io/u/<token>      apex-certs@process.subshield.io
+                │                                 │
+                └────────────────┬────────────────┘
                                  ▼
                     [CLOUDFLARE WORKER: ingest]
               HTTP handler + email() handler, same code path
@@ -441,19 +446,19 @@ bill.
 Three entrypoints, one Worker, one `wrangler.toml`.
 
 ```toml
-name = "certtrack"
+name = "subshield"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
 [[r2_buckets]]
 binding = "DOCS"
-bucket_name = "certtrack-docs"
+bucket_name = "subshield-docs"
 
 [triggers]
 crons = ["0 13 * * *"]     # 08:00 America/New_York; Workers cron is UTC only
 
 [vars]
-APP_URL = "https://app.certtrackops.com"
+APP_URL = "https://app.subshield.io"
 # secrets: OPENAI_API_KEY, RESEND_API_KEY, DATABASE_URL  (wrangler secret put)
 ```
 
@@ -566,7 +571,7 @@ claim — see the caveat in §11 about how you describe it in sales copy.
   [ View document ]  [ Approve override ]  [ Reject & request corrected COI ]
               │
               ▼
-[Review queue at app.certtrackops.com/review/<cert_id>]
+[Review queue at app.subshield.io/review/<cert_id>]
   Left:  the original PDF, inline
   Right: the extracted fields, editable, each failed check flagged in red
   Actions: Approve (with edits) · Approve override (records who and why) · Reject
@@ -591,7 +596,7 @@ Build notes:
 
 ### 1. Subcontractor upload page
 
-`app.certtrackops.com/u/<upload_token>` — one static HTML file served by the Worker.
+`app.subshield.io/u/<upload_token>` — one static HTML file served by the Worker.
 
 - Vendor name and email pre-filled from the token, read-only.
 - Drag-and-drop, accepts `.pdf .png .jpg`, 15 MB cap enforced client- and server-side.
@@ -662,11 +667,14 @@ the session, never from a request parameter.
 
 ### Cold email sequence
 
-Keep sending from a **separate domain** from your app domain (e.g. `certtrackops.co` for
-outbound, `certtrackops.com` for product), so cold-outreach reputation can never take down
-your compliance-critical transactional email. This costs another ~$12/yr and is the best
-money in the plan. Warm it for two weeks before volume, cap at 30–50/day per mailbox, and
-follow CAN-SPAM: real physical address, working one-click unsubscribe, honest subject lines.
+Send cold outreach from `subshieldhq.com`, never from `subshield.io`. Keeping the sales
+domain separate from the product domain means cold-outreach reputation can never take down
+your compliance-critical transactional email — which is the email that actually has to
+arrive. At ~$11/yr it is the best-spent money in the plan.
+
+Warm the outbound domain for two weeks before volume, cap at 30–50 sends/day per mailbox,
+and follow CAN-SPAM: real physical address, working one-click unsubscribe, honest subject
+lines.
 
 **Email 1 — the operational audit (Day 1)**
 > **Subject:** Quick question re: [Company]'s subcontractor insurance files
@@ -679,7 +687,7 @@ follow CAN-SPAM: real physical address, working one-click unsubscribe, honest su
 > If a sub steps onto an active site with a lapsed policy, [Company] carries the liability
 > exposure when something goes wrong.
 >
-> We built CertTrack Ops for regional GCs: it reads incoming ACORD forms, checks the limits
+> We built SubShield for regional GCs: it reads incoming ACORD forms, checks the limits
 > and endorsements against your requirements, and chases your subs starting 30 days before
 > expiration.
 >
@@ -741,7 +749,7 @@ client #10.
 ```
 [Day 0 — contract signed]
   1. insert into companies (name, contact, minimums, endorsement requirements)
-  2. provision inbound alias: <client>-certs@process.certtrackops.com
+  2. provision inbound alias: <client>-certs@process.subshield.io
      (catch-all Worker route — no per-client DNS or routing rule)
   3. generate per-sub upload tokens
   4. request their current subcontractor list (name, email, trade)
@@ -768,8 +776,8 @@ the first invoice feel cheap.
 | Supabase Postgres | $0 | $0 | $0–25 (Pro if you exceed 500 MB or want backups) |
 | OpenAI API | ~$0.20 | ~$2 | ~$5 |
 | Email delivery | $0 | $0–20 | $20 |
-| Domains (2, amortized) | $2 | $2 | $2 |
-| **Total / month** | **~$2** | **~$5–25** | **~$32–52** |
+| Domains (2, amortized) | $3.50 | $3.50 | $3.50 |
+| **Total / month** | **~$4** | **~$7–27** | **~$34–54** |
 
 Versus $939/mo in the original plan. At 250 clients the stack is roughly **0.05% of
 revenue**. The honest framing is not "98.9% gross margin" — it's that infrastructure was
