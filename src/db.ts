@@ -17,9 +17,12 @@ export interface Company extends Requirements {
   id: string;
   company_name: string;
   primary_contact_email: string;
+  primary_contact_name: string | null;
   inbound_alias: string;
   slack_webhook_url: string | null;
   status: 'active' | 'paused' | 'past_due';
+  require_holder_match: boolean;
+  holder_aliases: string[] | null;
 }
 
 export interface Subcontractor {
@@ -43,6 +46,46 @@ export interface CertificateRow {
   failure_reasons: FailureReason[] | null;
   expiration_date: string | null;
   created_at: string;
+}
+
+/** One row of work for the chase cron. */
+export interface ChaseRow {
+  id: string;
+  company_id: string;
+  vendor_name: string;
+  contact_email: string;
+  upload_token: string;
+  last_chase_stage: number | null;
+  last_chased_at: string | null;
+  active_cert_id: string | null;
+  company_name: string;
+  primary_contact_email: string;
+  expiration_date: string | null;
+  compliance_status: 'missing' | 'expired' | 'expiring_soon' | 'compliant';
+  days_remaining: number | null;
+}
+
+/** One row of the client's compliance grid. */
+export interface DashboardRow {
+  id: string;
+  company_id: string;
+  vendor_name: string;
+  trade: string | null;
+  contact_person: string | null;
+  contact_email: string;
+  last_chased_at: string | null;
+  last_chase_stage: number | null;
+  certificate_id: string | null;
+  expiration_date: string | null;
+  carrier_name: string | null;
+  gl_policy_number: string | null;
+  gl_each_occurrence: number | null;
+  gl_general_aggregate: number | null;
+  additional_insured: boolean | null;
+  waiver_subrogation: boolean | null;
+  reviewed_by: string | null;
+  compliance_status: 'missing' | 'expired' | 'expiring_soon' | 'compliant';
+  days_remaining: number | null;
 }
 
 export interface CertificateDetail extends CertificateRow {
@@ -135,6 +178,22 @@ export class Db {
     return rows[0] ?? null;
   }
 
+  /**
+   * Has this client already been sent this exact file?
+   *
+   * Scoped by company: two general contractors holding the same vendor's
+   * certificate is normal, and is not a duplicate of anything.
+   */
+  async findByContentHash(companyId: string, sha: string): Promise<CertificateRow | null> {
+    const rows = await this.request<CertificateRow[]>(
+      `/certificates?company_id=eq.${encodeURIComponent(companyId)}` +
+        `&content_sha256=eq.${encodeURIComponent(sha)}` +
+        `&select=id,verification_status,failure_reasons,expiration_date,created_at` +
+        `&order=created_at.desc&limit=1`,
+    );
+    return rows[0] ?? null;
+  }
+
   async insertCertificate(row: Record<string, unknown>): Promise<CertificateRow> {
     const rows = await this.request<CertificateRow[]>('/certificates', {
       method: 'POST',
@@ -182,6 +241,66 @@ export class Db {
       headers: { prefer: 'return=minimal' },
       body: JSON.stringify({ active_cert_id: certificateId }),
     });
+  }
+
+  /** Vendors due a chase today, soonest expiry first. */
+  async chaseQueue(limit: number): Promise<ChaseRow[]> {
+    return this.request<ChaseRow[]>(
+      `/v_chase_queue?select=*&order=days_remaining.asc.nullsfirst&limit=${limit}`,
+    );
+  }
+
+  async recordChase(subcontractorId: string, stage: number, now: Date): Promise<void> {
+    await this.request(`/subcontractors?id=eq.${encodeURIComponent(subcontractorId)}`, {
+      method: 'PATCH',
+      headers: { prefer: 'return=minimal' },
+      body: JSON.stringify({ last_chase_stage: stage, last_chased_at: now.toISOString() }),
+    });
+  }
+
+  /** Mark a lapsed certificate expired and clear the vendor's active link. */
+  async expireCertificate(certificateId: string, subcontractorId: string): Promise<void> {
+    await this.request(`/certificates?id=eq.${encodeURIComponent(certificateId)}`, {
+      method: 'PATCH',
+      headers: { prefer: 'return=minimal' },
+      body: JSON.stringify({ verification_status: 'expired' }),
+    });
+    await this.request(`/subcontractors?id=eq.${encodeURIComponent(subcontractorId)}`, {
+      method: 'PATCH',
+      headers: { prefer: 'return=minimal' },
+      body: JSON.stringify({ active_cert_id: null }),
+    });
+  }
+
+  async dashboard(companyId: string): Promise<DashboardRow[]> {
+    return this.request<DashboardRow[]>(
+      `/v_dashboard?company_id=eq.${encodeURIComponent(companyId)}` +
+        `&select=*&order=days_remaining.asc.nullsfirst`,
+    );
+  }
+
+  async companyById(id: string): Promise<Company | null> {
+    const rows = await this.request<Company[]>(
+      `/companies?id=eq.${encodeURIComponent(id)}&select=*&limit=1`,
+    );
+    return rows[0] ?? null;
+  }
+
+  async pendingReview(companyId: string): Promise<CertificateDetail[]> {
+    return this.request<CertificateDetail[]>(
+      `/certificates?company_id=eq.${encodeURIComponent(companyId)}` +
+        `&verification_status=eq.pending_review` +
+        `&select=*,companies(*),subcontractors(*)&order=created_at.desc&limit=100`,
+    );
+  }
+
+  async recentActivity(companyId: string, limit = 200): Promise<
+    { action: string; actor: string; created_at: string; details: unknown }[]
+  > {
+    return this.request(
+      `/audit_logs?company_id=eq.${encodeURIComponent(companyId)}` +
+        `&select=action,actor,created_at,details&order=created_at.desc&limit=${limit}`,
+    );
   }
 
   /** Every state change gets a row. The audit trail is the product. */

@@ -1,7 +1,7 @@
 import PostalMime from 'postal-mime';
 import { ACCEPTED_TYPES, checkFile } from './extract';
 import { aliasFromAddress, matchSubcontractor } from './matching';
-import { processCertificate, type PipelineEnv } from './pipeline';
+import { ingest, processCertificate, type PipelineEnv } from './pipeline';
 import { Db } from './db';
 import { sendEmail } from './notify';
 
@@ -127,34 +127,20 @@ export async function handleInboundMail(
     ? await db.subcontractorById(bySender.subcontractorId)
     : null;
 
-  const key = `${company.id}/${subcontractor?.id ?? 'unmatched'}/${Date.now()}-${crypto.randomUUID()}`;
-  await env.DOCS.put(key, file.bytes, { httpMetadata: { contentType: file.type } });
-
-  const cert = await db.insertCertificate({
-    company_id: company.id,
-    subcontractor_id: subcontractor?.id ?? null,
-    r2_key: key,
+  const { certificateId, duplicate } = await ingest(file, {
+    db,
+    bucket: env.DOCS,
+    companyId: company.id,
+    subcontractorId: subcontractor?.id ?? null,
     source: 'email',
-    original_filename: file.filename,
-    verification_status: 'processing',
+    details: { from: sender, subject: parsed.subject, matched_by: bySender.method },
   });
 
-  await db.log({
-    company_id: company.id,
-    subcontractor_id: subcontractor?.id ?? null,
-    certificate_id: cert.id,
-    action: 'ingested',
-    details: {
-      source: 'email',
-      from: sender,
-      subject: parsed.subject,
-      filename: file.filename,
-      bytes: file.bytes.length,
-      matched_by: bySender.method,
-    },
-  });
+  // An agent replying-all on a thread resends the same attachment. One
+  // extraction, one notification.
+  if (duplicate) return;
 
-  await processCertificate(file, cert.id, {
+  await processCertificate(file, certificateId, {
     env,
     db,
     company,

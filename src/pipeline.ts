@@ -1,6 +1,6 @@
 import type { Candidate } from './matching';
 import { matchSubcontractor } from './matching';
-import { ExtractionError, extract } from './extract';
+import { ExtractionError, extract, sha256 } from './extract';
 import { validate } from './validate';
 import { signLink } from './sign';
 import {
@@ -39,6 +39,71 @@ export interface PipelineFile {
   bytes: Uint8Array;
   type: string;
   filename: string;
+}
+
+/**
+ * Store a document and open a certificate row for it — unless this client has
+ * already been sent the identical file, in which case return what they have.
+ *
+ * Shared by both intakes so a document mailed and then uploaded costs one
+ * extraction and raises one notification.
+ */
+export async function ingest(
+  file: PipelineFile,
+  opts: {
+    db: Db;
+    bucket: R2Bucket;
+    companyId: string;
+    subcontractorId: string | null;
+    source: 'portal' | 'email';
+    details?: Record<string, unknown>;
+  },
+): Promise<{ certificateId: string; duplicate: boolean }> {
+  const { db, bucket, companyId, subcontractorId, source } = opts;
+  const sha = await sha256(file.bytes);
+
+  const existing = await db.findByContentHash(companyId, sha);
+  if (existing) {
+    await db.log({
+      company_id: companyId,
+      subcontractor_id: subcontractorId,
+      certificate_id: existing.id,
+      action: 'duplicate_ignored',
+      details: { source, filename: file.filename, sha256: sha, ...opts.details },
+    });
+    return { certificateId: existing.id, duplicate: true };
+  }
+
+  const key = `${companyId}/${subcontractorId ?? 'unmatched'}/${Date.now()}-${crypto.randomUUID()}`;
+  await bucket.put(key, file.bytes as BufferSource, {
+    httpMetadata: { contentType: file.type },
+  });
+
+  const cert = await db.insertCertificate({
+    company_id: companyId,
+    subcontractor_id: subcontractorId,
+    r2_key: key,
+    source,
+    original_filename: file.filename,
+    content_sha256: sha,
+    verification_status: 'processing',
+  });
+
+  await db.log({
+    company_id: companyId,
+    subcontractor_id: subcontractorId,
+    certificate_id: cert.id,
+    action: 'ingested',
+    details: {
+      source,
+      filename: file.filename,
+      bytes: file.bytes.length,
+      sha256: sha,
+      ...opts.details,
+    },
+  });
+
+  return { certificateId: cert.id, duplicate: false };
 }
 
 /**

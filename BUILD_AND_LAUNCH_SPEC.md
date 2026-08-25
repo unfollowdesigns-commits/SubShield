@@ -628,26 +628,26 @@ Run every case against a seeded test tenant before the first paying client. Case
 through TC-06 are the original matrix; TC-07 onward are the failures that actually happen
 in production and that the original spec didn't cover.
 
-| # | Test input | Expected behavior | Pass |
+| # | Test input | Expected behavior | Covered by |
 | :--- | :--- | :--- | :--- |
-| TC-01 | Pristine digital ACORD 25 PDF | Auto-approved < 30s, sub turns green | [ ] |
-| TC-02 | Phone photo of a crumpled ACORD 25 | Parsed, confidence >= 0.90, auto-approved | [ ] |
-| TC-03 | Policy expired yesterday | `policy_expired`, rejected, chase triggered | [ ] |
-| TC-04 | $500k occurrence vs $1M minimum | `occurrence_limit_below_minimum`, HITL queue | [ ] |
-| TC-05 | ADDL INSD column blank | `missing_additional_insured`, correction request sent | [ ] |
-| TC-06 | A W-9 or an invoice | `not_an_acord_25`, rejection email, **no extraction charge** | [ ] |
-| TC-07 | ACORD 25 where the **Auto** row has $1M but GL is blank | `missing_occurrence_limit` — model must not borrow the auto limit | [ ] |
-| TC-08 | Multi-page PDF, ACORD on page 3 | Found, or cleanly rejected with "certificate not on first pages" | [ ] |
-| TC-09 | Upside-down / 90°-rotated scan | Parsed correctly, or confidence drops below floor → HITL | [ ] |
-| TC-10 | Certificate holder is a *different* GC | Flagged `holder_mismatch` for review, never auto-approved | [ ] |
-| TC-11 | Same COI emailed twice in 5 minutes | One certificate row, second logged as duplicate, one email sent | [ ] |
-| TC-12 | Sub emails from an address not on file | `unmatched_vendor` in review queue, nothing auto-assigned | [ ] |
-| TC-13 | 40 MB scan | Rejected before the API call, friendly "please send under 15 MB" | [ ] |
-| TC-14 | Password-protected PDF | Rejected with a specific reason, no crash, no charge | [ ] |
-| TC-15 | OpenAI returns 429 | One retry, then `pending_review` with `extraction_failed` — never lost | [ ] |
-| TC-16 | Cron runs twice in one day | Zero duplicate chase emails (`last_chase_stage` guard) | [ ] |
-| TC-17 | Cron queue of 200 subs on the free plan | All 200 processed across batches, none dropped at the 50-subrequest cap | [ ] |
-| TC-18 | Client A's token requesting Client B's data | 403, and an `audit_logs` entry. Test this one twice. | [ ] |
+| TC-01 | Pristine digital ACORD 25 PDF | Auto-approved < 30s, sub turns green | needs a real document |
+| TC-02 | Phone photo of a crumpled ACORD 25 | Parsed, confidence >= 0.90, auto-approved | needs a real document |
+| TC-03 | Policy expired yesterday | `policy_expired`, rejected, chase triggered | `validate` · automated |
+| TC-04 | $500k occurrence vs $1M minimum | `occurrence_limit_below_minimum`, HITL queue | `validate` · automated |
+| TC-05 | ADDL INSD column blank | `missing_additional_insured`, correction request sent | `validate` · automated |
+| TC-06 | A W-9 or an invoice | `not_an_acord_25`, rejection email, **no extraction charge** | `validate` · automated |
+| TC-07 | ACORD 25 where the **Auto** row has $1M but GL is blank | `missing_occurrence_limit` — model must not borrow the auto limit | `validate` · automated |
+| TC-08 | Multi-page PDF, ACORD on page 3 | Found, or cleanly rejected with "certificate not on first pages" | needs a real document |
+| TC-09 | Upside-down / 90°-rotated scan | Parsed correctly, or confidence drops below floor → HITL | needs a real document |
+| TC-10 | Certificate holder is a *different* GC | Flagged `holder_mismatch` for review, never auto-approved | `holderMatches` · automated |
+| TC-11 | Same COI emailed twice in 5 minutes | One certificate row, second logged as duplicate, one email sent | `ingest` · automated |
+| TC-12 | Sub emails from an address not on file | `unmatched_vendor` in review queue, nothing auto-assigned | `matchSubcontractor` · automated |
+| TC-13 | 40 MB scan | Rejected before the API call, friendly "please send under 15 MB" | `checkFile` · automated |
+| TC-14 | Password-protected PDF | Rejected with a specific reason, no crash, no charge | `isEncryptedPdf` · automated |
+| TC-15 | OpenAI returns 429 | One retry, then `pending_review` with `extraction_failed` — never lost | `extract` · automated |
+| TC-16 | Cron runs twice in one day | Zero duplicate chase emails (`last_chase_stage` guard) | `alreadyChased` · automated |
+| TC-17 | Cron queue of 200 subs on the free plan | All 200 processed across batches, none dropped at the 50-subrequest cap | needs a seeded queue |
+| TC-18 | Client A's token requesting Client B's data | 403, and an `audit_logs` entry. Test this one twice. | `signLink` · automated |
 
 TC-18 is not optional. Multi-tenant leakage in a compliance product is the failure that
 ends the company; every query in the Worker must be scoped by `company_id` derived from

@@ -13,6 +13,9 @@ APP_URL = "https://app.subshield.io"
 OPENAI_MODEL = "gpt-5-mini"
 OPENAI_INPUT_RATE = "0.25"
 OPENAI_OUTPUT_RATE = "2.00"
+# Vendors chased per cron run. Each costs ~3 subrequests and the free plan
+# allows 50 per invocation, so keep this well under 16.
+CHASE_BATCH_SIZE = "12"
 
 # Secrets — set with `wrangler secret put <NAME>`, never in this file:
 #   OPENAI_API_KEY
@@ -27,6 +30,7 @@ OPENAI_OUTPUT_RATE = "2.00"
 # One catch-all for every client keeps the account under the 200-rule limit;
 # the local part of the recipient address is the tenant key.
 
-# The daily 30/15/7/0 chase ladder is not built yet. When it is:
-# [triggers]
-# crons = ["0 13 * * *"]   # 08:00 America/New_York — Workers cron is UTC only
+[triggers]
+# 08:00 America/New_York. Workers cron is UTC only, so this shifts by an hour
+# with daylight saving — acceptable for a ladder whose rungs are day windows.
+crons = ["0 13 * * *"]

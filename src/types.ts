@@ -21,6 +21,11 @@ export interface Requirements {
   min_gl_aggregate: number;
   require_additional_insured: boolean;
   require_waiver_subrogation: boolean;
+  /** Off by default so a client without a configured name is never blocked. */
+  require_holder_match?: boolean;
+  company_name?: string;
+  /** Other names this client is legitimately named by: a DBA, a parent entity. */
+  holder_aliases?: string[] | null;
 }
 
 /**
@@ -38,7 +43,10 @@ export type FailureReason =
   | 'missing_aggregate_limit'
   | 'aggregate_limit_below_minimum'
   | 'missing_additional_insured'
-  | 'missing_waiver_of_subrogation';
+  | 'missing_waiver_of_subrogation'
+  | 'missing_certificate_holder'
+  | 'holder_mismatch'
+  | 'unmatched_vendor';
 
 export type VerificationStatus =
   | 'processing'

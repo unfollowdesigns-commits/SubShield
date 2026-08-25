@@ -54,6 +54,34 @@ export function checkFile(type: string, bytes: number): AcceptedType {
   return normalized as AcceptedType;
 }
 
+/** File guards that need to read the bytes, not just the headers. */
+export function checkContent(type: AcceptedType, bytes: Uint8Array): void {
+  if (type === 'application/pdf' && isEncryptedPdf(bytes)) {
+    throw new ExtractionError(
+      'This PDF is password protected and cannot be read',
+      'pdf_password_protected',
+    );
+  }
+}
+
+/** SHA-256 of the file, hex. Identifies a document sent twice. */
+export async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Encrypted PDFs come back from the model as blank pages or a refusal, which
+ * reads as a low-confidence certificate rather than a file nobody can open.
+ * Catching it here turns it into something the sender can act on.
+ */
+export function isEncryptedPdf(bytes: Uint8Array): boolean {
+  // The trailer holds /Encrypt when a document has any security handler, and
+  // lives at the end of the file — reading the tail avoids scanning 15 MB.
+  const tail = bytes.subarray(Math.max(0, bytes.length - 4096));
+  return /\/Encrypt\b/.test(new TextDecoder('latin1').decode(tail));
+}
+
 /** Base64 in chunks — btoa on a 15 MB spread argument list blows the stack. */
 export function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -137,6 +165,7 @@ export async function extract(
   opts: ExtractOptions,
 ): Promise<ExtractResult> {
   const type = checkFile(file.type, file.bytes.length);
+  checkContent(type, file.bytes);
   const doFetch = opts.fetchImpl ?? fetch;
   const body = {
     model: opts.model,

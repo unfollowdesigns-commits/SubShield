@@ -1,3 +1,4 @@
+import { normalizeName, similarity } from './matching';
 import type { Extraction, FailureReason, Requirements } from './types';
 
 /**
@@ -7,6 +8,34 @@ import type { Extraction, FailureReason, Requirements } from './types';
 export const CONFIDENCE_FLOOR = 0.9;
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** How close the holder block has to be to the client's name to count. */
+export const HOLDER_MATCH_THRESHOLD = 0.75;
+
+/**
+ * Is this certificate made out to this client?
+ *
+ * The holder block is a postal address, so the client's name is looked for
+ * inside it rather than compared to the whole. Any configured alias counts —
+ * a certificate naming "Apex Builders" is good for "Apex Builders Group LLC".
+ */
+export function holderMatches(
+  holderText: string | null,
+  expected: string[],
+): boolean {
+  const names = expected.map(normalizeName).filter(Boolean);
+  if (names.length === 0) return true;   // nothing to check against
+  if (!holderText) return false;
+
+  const haystack = normalizeName(holderText);
+  if (!haystack) return false;
+  if (names.some((n) => haystack.includes(n))) return true;
+
+  // Fall back to comparing the first line, where the name usually sits, so a
+  // small misreading of one character does not read as a different company.
+  const firstLine = normalizeName(holderText.split(/\r?\n/)[0] ?? '');
+  return names.some((n) => similarity(firstLine, n) >= HOLDER_MATCH_THRESHOLD);
+}
 
 /** Today as YYYY-MM-DD in UTC. Dates are compared as strings — see validate(). */
 export function todayIso(now: Date = new Date()): string {
@@ -87,6 +116,15 @@ export function validate(
     fail.push('missing_waiver_of_subrogation');
   }
 
+  // G — is it made out to this client at all? A certificate naming a different
+  // general contractor is not evidence of coverage for this one.
+  const expected = [reqs.company_name, ...(reqs.holder_aliases ?? [])]
+    .filter((n): n is string => typeof n === 'string' && n.trim() !== '');
+  if (reqs.require_holder_match && expected.length > 0) {
+    if (!x.certificate_holder_text) fail.push('missing_certificate_holder');
+    else if (!holderMatches(x.certificate_holder_text, expected)) fail.push('holder_mismatch');
+  }
+
   return fail;
 }
 
@@ -112,4 +150,7 @@ export const FAILURE_TEXT: Record<FailureReason, string> = {
   aggregate_limit_below_minimum: 'The general aggregate limit is below the required minimum',
   missing_additional_insured: 'The certificate does not show additional insured status',
   missing_waiver_of_subrogation: 'The certificate does not show a waiver of subrogation',
+  missing_certificate_holder: 'No certificate holder could be read from the document',
+  holder_mismatch: 'The certificate holder is a different company',
+  unmatched_vendor: 'We could not tell which subcontractor this certificate belongs to',
 };

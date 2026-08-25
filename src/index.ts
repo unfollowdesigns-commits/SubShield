@@ -3,12 +3,14 @@ import { ExtractionError, checkFile } from './extract';
 import { FAILURE_TEXT } from './validate';
 import { renderUploadPage } from './upload-page';
 import { applyDecision, renderReviewPage } from './review';
-import { processCertificate, type PipelineEnv } from './pipeline';
+import { ingest, processCertificate, type PipelineEnv } from './pipeline';
 import { handleInboundMail, type EmailEnv, type InboundMessage } from './email';
-import { verifyLink } from './sign';
+import { runChase, type ChaseEnv } from './chase';
+import { renderExceptions, renderGrid, renderReport } from './dashboard';
+import { signLink, verifyLink } from './sign';
 import type { FailureReason } from './types';
 
-export interface Env extends PipelineEnv, EmailEnv {
+export interface Env extends PipelineEnv, EmailEnv, ChaseEnv {
   DOCS: R2Bucket;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
@@ -43,6 +45,7 @@ export default {
 
     if (parts[0] === 'u' && parts[1]) return uploadRoutes(req, env, ctx, db, parts);
     if (parts[0] === 'review' && parts[1]) return reviewRoutes(req, env, db, url, parts);
+    if (parts[0] === 'dash') return dashboardRoutes(env, db, url, parts);
 
     return html('<h1>Not found</h1>', 404);
   },
@@ -50,7 +53,62 @@ export default {
   async email(message: InboundMessage, env: Env): Promise<void> {
     await handleInboundMail(message, env);
   },
+
+  /**
+   * The daily chase ladder. Cron fires at a fixed UTC hour; each run drains a
+   * batch and the next picks up the rest, so nothing is lost to the free plan's
+   * subrequest limit.
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      runChase(env).then(async (result) => {
+        console.log('chase run', JSON.stringify(result));
+      }),
+    );
+  },
 } satisfies ExportedHandler<Env>;
+
+// ─── client dashboard ────────────────────────────────────────────────────────
+
+/**
+ * A signed link scoped to one company, emailed to the client. The company id is
+ * inside the signature, so every query below is scoped to a tenant the holder
+ * of the link has been granted — never to an id taken from the request.
+ */
+async function dashboardRoutes(
+  env: Env,
+  db: Db,
+  url: URL,
+  parts: string[],
+): Promise<Response> {
+  const token = url.searchParams.get('t');
+  const companyId = url.searchParams.get('c') ?? '';
+  if (!companyId || !(await verifyLink(`dash:${companyId}`, token, env.LINK_SECRET))) {
+    return html('<h1>This dashboard link has expired</h1>', 403);
+  }
+
+  const company = await db.companyById(companyId);
+  if (!company) return html('<h1>Not found</h1>', 404);
+
+  if (parts[1] === 'exceptions') {
+    const certs = await db.pendingReview(companyId);
+    const links = new Map<string, string>();
+    for (const c of certs) {
+      links.set(c.id, await signLink(`review:${c.id}`, env.LINK_SECRET));
+    }
+    return html(renderExceptions(company, certs, links, token!));
+  }
+
+  if (parts[1] === 'report') {
+    const [rows, activity] = await Promise.all([
+      db.dashboard(companyId),
+      db.recentActivity(companyId),
+    ]);
+    return html(renderReport(company, rows, activity, token!));
+  }
+
+  return html(renderGrid(company, await db.dashboard(companyId), token!));
+}
 
 // ─── subcontractor upload ────────────────────────────────────────────────────
 
@@ -113,29 +171,22 @@ async function handleUpload(
     return json({ message: e.message, reasons: [e.message] }, 415);
   }
 
-  const key = `${sub.company_id}/${sub.id}/${Date.now()}-${crypto.randomUUID()}`;
-  await env.DOCS.put(key, bytes, { httpMetadata: { contentType: file.type } });
-
-  const cert = await db.insertCertificate({
-    company_id: sub.company_id,
-    subcontractor_id: sub.id,
-    r2_key: key,
+  const payload = { bytes, type: file.type, filename: file.name };
+  const { certificateId, duplicate } = await ingest(payload, {
+    db,
+    bucket: env.DOCS,
+    companyId: sub.company_id,
+    subcontractorId: sub.id,
     source: 'portal',
-    original_filename: file.name,
-    verification_status: 'processing',
   });
 
-  await db.log({
-    company_id: sub.company_id,
-    subcontractor_id: sub.id,
-    certificate_id: cert.id,
-    action: 'ingested',
-    details: { source: 'portal', filename: file.name, bytes: bytes.length },
-  });
+  // Sending the same file twice is a person checking it arrived, not a new
+  // certificate. Show them the verdict they already have.
+  if (duplicate) return json({ certificate_id: certificateId, status: 'processing' }, 200);
 
   // Extraction takes ~10–20s. Answer now, let the page poll for the verdict.
   ctx.waitUntil(
-    processCertificate({ bytes, type: file.type, filename: file.name }, cert.id, {
+    processCertificate(payload, certificateId, {
       env,
       db,
       company: sub.companies,
@@ -144,7 +195,7 @@ async function handleUpload(
     }),
   );
 
-  return json({ certificate_id: cert.id, status: 'processing' }, 202);
+  return json({ certificate_id: certificateId, status: 'processing' }, 202);
 }
 
 // ─── human review ────────────────────────────────────────────────────────────
